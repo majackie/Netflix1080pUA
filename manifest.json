@@ -1,0 +1,56 @@
+{
+  "manifest_version": 2,
+  "name": "Netflix 1080p UA",
+  "description": "Forces Netflix to stream at 1080p.",
+  "version": "1.0",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{221ca73e-12bd-11f1-b1cd-2cf05d5d458e}",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"],
+        "optional": []
+      }
+    }
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "storage",
+    "tabs",
+    "*://*.netflix.com/*",
+    "*://assets.nflxext.com/*",
+    "https://jnrbsn.github.io/user-agents/user-agents.json"
+  ],
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_title": "Netflix 1080p UA",
+    "default_icon": {
+      "48": "icon.svg",
+      "96": "icon.svg",
+      "128": "icon.svg"
+    }
+  },
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg",
+    "128": "icon.svg"
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.netflix.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}
