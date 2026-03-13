@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "Netflix 1080p UA",
   "description": "Forces Netflix to stream at 1080p.",
-  "version": "1.0",
+  "version": "2.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "{221ca73e-12bd-11f1-b1cd-2cf05d5d458e}",
@@ -16,6 +16,7 @@
   "permissions": [
     "webRequest",
     "webRequestBlocking",
+    "webNavigation",
     "storage",
     "tabs",
     "*://*.netflix.com/*",

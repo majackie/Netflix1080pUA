@@ -22,8 +22,10 @@ async function refreshUA() {
   try {
     const data = await fetch(UA_API).then(r => { if (!r.ok) throw r; return r.json(); });
     activeUA = buildOperaUA(data);
+    console.log("[Netflix 1080p UA] Fetched fresh UA:", activeUA);
     await browser.storage.local.set({ cachedUA: activeUA, cachedUATimestamp: now });
-  } catch {
+  } catch (e) {
+    console.error("[Netflix 1080p UA] Failed to fetch UA, using fallback:", e);
     activeUA = cachedUA ?? FALLBACK_UA;
   }
 }
@@ -52,34 +54,131 @@ async function setEnabled(value) {
   enabled = value;
   await browser.storage.local.set({ enabled });
   updateIcon(enabled);
+  
+  // Notify all Netflix tabs of the change
+  const tabs = await browser.tabs.query({ url: "*://*.netflix.com/*" });
+  for (const tab of tabs) {
+    browser.tabs.sendMessage(tab.id, { type: "UPDATE_UA", enabled, ua: activeUA }).catch(() => {});
+  }
 }
 
 // messages
 browser.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "SET_ENABLED") return setEnabled(msg.value).then(() => ({ ok: true, ua: activeUA }));
-  if (msg.type === "GET_STATE")   return Promise.resolve({ enabled, ua: activeUA });
+  if (msg.type === "SET_ENABLED") {
+    return setEnabled(msg.value).then(() => ({ ok: true, ua: activeUA }));
+  }
+  if (msg.type === "GET_STATE") return Promise.resolve({ enabled, ua: activeUA });
 });
 
-// request interception
+// Monitor page navigation to Netflix and clear caches
+browser.webNavigation.onBeforeNavigate.addListener(
+  ({ tabId, url }) => {
+    if (enabled && (url.includes("netflix.com"))) {
+      console.log("[Netflix 1080p UA] Netflix page navigation detected, clearing caches");
+      browser.tabs.sendMessage(tabId, { type: "CLEAR_CACHE" }).catch(() => {});
+    }
+  },
+  { url: [{ hostContains: "netflix.com" }] }
+);
+
+// request interception - must be registered before any requests happen
+console.log("[Netflix 1080p UA] Registering webRequest listener");
 browser.webRequest.onBeforeSendHeaders.addListener(
-  ({ requestHeaders }) => {
+  ({ requestHeaders, url }) => {
     if (!enabled) return {};
+    
     const uaHeader = requestHeaders.find(h => h.name.toLowerCase() === "user-agent");
-    if (uaHeader) uaHeader.value = activeUA;
-    else requestHeaders.push({ name: "User-Agent", value: activeUA });
+    if (uaHeader) {
+      uaHeader.value = activeUA;
+    } else {
+      requestHeaders.push({ name: "User-Agent", value: activeUA });
+    }
+    
+    // Add cache-busting headers for playback/capability requests to force fresh detection
+    if (url.includes("shakti") || url.includes("playback") || url.includes("capability")) {
+      requestHeaders.push({ name: "Cache-Control", value: "no-cache, no-store, must-revalidate" });
+      requestHeaders.push({ name: "Pragma", value: "no-cache" });
+      requestHeaders.push({ name: "Expires", value: "0" });
+      console.log(`[Netflix 1080p UA] Capability request with cache-busting: ${new URL(url).pathname} | UA: ${activeUA.split(' ').pop()}`);
+    }
+    
     return { requestHeaders };
   },
   { urls: NETFLIX_URLS },
   ["blocking", "requestHeaders"]
 );
 
+// Intercept responses to prevent caching of capability requests
+browser.webRequest.onHeadersReceived.addListener(
+  ({ responseHeaders, url }) => {
+    if (!enabled) return {};
+    
+    // For capability/playback requests, force cache validation
+    if (url.includes("shakti") || url.includes("playback") || url.includes("capability")) {
+      const headersToUpdate = ["Cache-Control", "Expires", "Pragma"];
+      let modified = false;
+      
+      for (const header of responseHeaders) {
+        if (headersToUpdate.includes(header.name)) {
+          if (header.name === "Cache-Control") {
+            header.value = "no-cache, no-store, must-revalidate, max-age=0";
+            modified = true;
+          } else if (header.name === "Expires") {
+            header.value = "0";
+            modified = true;
+          } else if (header.name === "Pragma") {
+            header.value = "no-cache";
+            modified = true;
+          }
+        }
+      }
+      
+      if (modified) {
+        console.log(`[Netflix 1080p UA] Modified cache headers for: ${new URL(url).pathname}`);
+      }
+      
+      return { responseHeaders };
+    }
+    
+    return {};
+  },
+  { urls: NETFLIX_URLS },
+  ["blocking", "responseHeaders"]
+);
+
 // init
 async function init() {
-  const { enabled: saved } = await browser.storage.local.get("enabled");
+  // First, load cached UA synchronously for immediate use
+  const { enabled: saved, cachedUA } = await browser.storage.local.get(["enabled", "cachedUA"]);
+  
+  // Set activeUA to cached value immediately before any network requests happen
+  if (cachedUA) {
+    activeUA = cachedUA;
+  }
+  
   await setEnabled(saved ?? true);
+  
+  // Then refresh/verify the UA in the background
   await refreshUA();
   updateIcon(enabled);
 }
 
+// Ensure UA is fresh when extension starts
 init();
-setInterval(refreshUA, CACHE_TTL);
+
+// Refresh UA periodically, but also ensure it's available quickly
+const refreshInterval = setInterval(refreshUA, CACHE_TTL);
+
+// Also refresh UA when extension loses and regains focus (in case cache expired)
+browser.tabs.onActivated.addListener(async () => {
+  const { cachedUATimestamp } = await browser.storage.local.get("cachedUATimestamp");
+  const now = Date.now();
+  if (!cachedUATimestamp || (now - cachedUATimestamp) > CACHE_TTL) {
+    await refreshUA();
+    // Notify all Netflix tabs of the updated UA
+    const tabs = await browser.tabs.query({ url: "*://*.netflix.com/*" });
+    for (const tab of tabs) {
+      browser.tabs.sendMessage(tab.id, { type: "UPDATE_UA", enabled, ua: activeUA }).catch(() => {});
+    }
+  }
+});
